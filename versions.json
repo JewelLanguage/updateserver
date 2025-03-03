@@ -1,0 +1,24 @@
+{
+  "dev":[
+    {
+      "major":0,
+      "minor":3,
+      "build":1,
+      "patch":0,
+      "count":0,
+      "link": ""
+    },
+    {
+      "major":0,
+      "minor":2,
+      "build":1,
+      "patch":0,
+      "count":0,
+      "link":""
+    }
+  ],
+  "stable":[],
+  "beta":[],
+  "canary":[],
+  "extended":[]
+}

@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+random-string = "1.0"
+serde_json = "1.0"
+serde = { version = "1.0.218", features = ["derive"] }
+
