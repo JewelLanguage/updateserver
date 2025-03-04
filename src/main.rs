@@ -1,59 +1,18 @@
+mod version;
+mod latest;
+mod request;
+
 use std::{
     fs,
     io::{prelude::*, BufReader},
     net::{TcpListener, TcpStream},
-    env,
     fmt
 };
-use std::backtrace::BacktraceStatus;
 use std::fmt::Debug;
 use std::path::Path;
-use std::sync::mpsc::channel;
 use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use crate::Action::{abandon, retry};
-use crate::Status::noupdate;
-// use serde_json::Value::String;
-
-#[derive(Serialize, Deserialize)]
-#[derive(Debug)]
-struct Version{
-    major:i32,
-    minor:i32,
-    build:i32,
-    patch:i32,
-    count:i32,   // Number of successful downloads of this version
-    urls:Vec<String>,
-}
-
-impl fmt::Display for Version{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}.{}, {:?}", self.major, self.minor, self.build, self.urls)?;
-        Ok(())
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct Versions{
-    dev:Vec<Version>,
-    stable:Vec<Version>,
-    beta:Vec<Version>,
-    canary:Vec<Version>,
-    extended:Vec<Version>
-}
-
-impl fmt::Display for Versions {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Versions:\n")?;
-        write!(f, "  Dev:    {:?}\n", self.dev)?;
-        write!(f, "  Stable: {:?}\n", self.stable)?;
-        write!(f, "  Beta:   {:?}\n", self.beta)?;
-        write!(f, "  Canary: {:?}\n", self.canary)?;
-        write!(f, "  Extended: {:?}\n", self.extended)?;
-        Ok(())
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 enum Platform {
@@ -156,7 +115,7 @@ enum Status{
 struct Manifest{
     arguments:String,
     run:String, // basically the installer (this will need work)
-    version:Version,
+    version:version::Version,
     url:String // the download url for the new version
 }
 
@@ -173,7 +132,8 @@ struct Response {
 // List of actions that can be taken based on specific response
 // Only two actions supported right now:
 // download -> download after verification
-// abandon -> no more responses
+// abandon -> no more responses,
+// retry -> for failures
 #[derive(Serialize, Deserialize)]
 enum Action{
     download,
@@ -191,7 +151,7 @@ struct LatestResponse{
     requestid:String
 }
 
-fn handle_connection(mut stream: TcpStream, versions:&Versions){
+fn handle_connection(mut stream: TcpStream, versions:&version::Versions){
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
 
@@ -219,9 +179,6 @@ fn handle_connection(mut stream: TcpStream, versions:&Versions){
         }
         headers.push_str(&line);
     }
-
-    println!("Headers:\n{}", headers);
-
 
     let mut body = String::new();
     if content_length > 0 {
@@ -338,7 +295,7 @@ fn create_response(status_code:i32, message:&str) -> String{
     entire_body
 }
 
-fn handle_latest_response(mut stream: &TcpStream, version:&Version, status:Status, request: &Request){
+fn handle_latest_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request){
     let mut response_string = String::from("");
     let mut response_object  = LatestResponse {
         actions: vec![],
@@ -403,8 +360,8 @@ fn handle_latest_response(mut stream: &TcpStream, version:&Version, status:Statu
     stream.write_all(response_string.as_bytes()).unwrap();
 }
 
-fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&Versions) {
-    let default_version = Version{
+fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&version::Versions) {
+    let default_version = version::Version{
         major:0,
         minor:0,
         build:0,
@@ -494,7 +451,7 @@ fn main() {
     let versions_content = fs::read_to_string(versions_path)
         .expect("Should have been able to read the file");
 
-    let versions = serde_json::from_str::<Versions>(&versions_content).unwrap();
+    let versions = serde_json::from_str::<version::Versions>(&versions_content).unwrap();
     println!("All Versions : {}",versions);
 
     let listener = TcpListener::bind("127.0.0.1:7778").unwrap();
