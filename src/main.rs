@@ -222,6 +222,7 @@ fn handle_connection(mut stream: TcpStream, versions:&Versions){
 
     println!("Headers:\n{}", headers);
 
+
     let mut body = String::new();
     if content_length > 0 {
         let mut buffer = vec![0; content_length];
@@ -349,7 +350,7 @@ fn handle_latest_response(mut stream: &TcpStream, version:&Version, status:Statu
     };
 
     if(request.requestid == "" || request.sessionid == ""){
-        response_string = create_response(500,"");
+        response_string = create_response(500, &serde_json::to_string(&response_string).unwrap());
         stream.write_all(response_string.as_bytes()).unwrap();
         return
     }
@@ -438,11 +439,6 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
         updaterversion:0.0
     };
 
-    if(body == ""){
-        handle_latest_response(&stream, versions.dev.first().unwrap(),Status::ok, &default_request);
-        return
-    }
-
     let split_line = request_header.split(" ").collect::<Vec<&str>>();
     let method = split_line[0];
     let endpoint = split_line[1];
@@ -461,7 +457,8 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
 
     match endpoint {
         "/latest" => {  // equivalent of update-check
-            let mut request_data = serde_json::from_str::<Request>(&body.as_str()).unwrap();
+            let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
+
             if(request_data.sessionid == ""){
                 request_data.sessionid = generate_id();
             }
@@ -482,11 +479,8 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
         },
 
         "/download" => {    // the download phase/ping check
-
         },
-
-        "status" => {   // equivalent of ping-bacl
-
+        "/status" => {   // equivalent of ping-back
         },
         _ => {
             return;
