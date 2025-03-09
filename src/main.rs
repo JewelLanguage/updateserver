@@ -10,10 +10,11 @@ use std::{
 };
 use std::fmt::Debug;
 use std::path::Path;
+use std::thread::current;
 use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use crate::session::{new_session, update_current_action, update_request, Session_Manager};
+use crate::session::{new_session, update_current_action, update_request, update_session_actions, Session_Manager};
 
 #[derive(Serialize, Deserialize)]
 enum Platform {
@@ -135,7 +136,7 @@ struct Response {
 // download -> download after verification
 // abandon -> no more responses,
 // retry -> for failures
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize,PartialEq)]
 enum Action{
     download,
     abandon,
@@ -457,6 +458,23 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
 
         "/download" => {    // the download phase/ping check
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
+            if(session_manager.sessions.contains_key(&request_data.sessionid)){
+                let current_session = session_manager.sessions.get(&request_data.sessionid).unwrap();
+                if(current_session.requestid == request_data.requestid && current_session.previous_action == Action::latest && current_session.possible_actions.contains(&Action::download)){
+                    let new_request_id = generate_id();
+                    let previous_action = Action::download;
+                    let update_request_result = update_request(session_manager, &request_data, new_request_id);
+                    if(update_request_result.0){
+                        let update_current_action = update_current_action(session_manager, &request_data, previous_action);
+                        if(update_current_action.0){
+                            let update_session_actions = update_session_actions(session_manager, &request_data, vec![Action::abandon, Action::retry]);
+                            if(update_session_actions.0){
+                                // all data is updated, create and send response
+                            }
+                        }
+                    }
+                }
+            }
         },
 
         "/status" => {   // equivalent of ping-back

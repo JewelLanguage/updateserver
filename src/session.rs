@@ -5,11 +5,11 @@ use crate::Action::latest;
 pub struct Session{
     pub requestid:String,
     pub possible_actions:Vec<Action>,
-    pub current_action:Action
+    pub previous_action:Action
 }
 
 pub struct Session_Manager{
-    sessions: HashMap<String, Session>
+   pub sessions: HashMap<String, Session>
 }
 
 pub fn new_session_manager() -> Session_Manager{
@@ -23,7 +23,7 @@ pub fn new_session(mut manager: &mut Session_Manager, request:&Request) -> bool{
        return false
     }
 
-    manager.sessions.insert(request.sessionid.clone(), Session {requestid:request.requestid.clone(), possible_actions:vec![Action::latest], current_action:Action::latest});
+    manager.sessions.insert(request.sessionid.clone(), Session {requestid:request.requestid.clone(), possible_actions:vec![Action::latest], previous_action:Action::latest});
     true
 }
 
@@ -52,7 +52,7 @@ pub fn update_current_action(mut manager:&Session_Manager, request: &Request, ne
         return (false, String::from("Invalid Request ID"));
     }
 
-    manager.sessions[&request.sessionid].current_action = new_action;
+    manager.sessions[&request.sessionid].previous_action = new_action;
     (true, String::from("success"))
 }
 
