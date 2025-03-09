@@ -6,7 +6,7 @@
       "build":1,
       "patch":0,
       "count":0,
-      "link": ""
+      "urls": []
     },
     {
       "major":0,
@@ -14,7 +14,7 @@
       "build":1,
       "patch":0,
       "count":0,
-      "link":""
+      "urls":[]
     }
   ],
   "stable":[],
