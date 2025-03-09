@@ -1,6 +1,5 @@
 mod version;
 mod latest;
-mod request;
 
 use std::{
     fs,
@@ -360,6 +359,11 @@ fn handle_latest_response(mut stream: &TcpStream, version:&version::Version, sta
     stream.write_all(response_string.as_bytes()).unwrap();
 }
 
+
+fn handle_download_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request){
+
+}
+
 fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&version::Versions) {
     let default_version = version::Version{
         major:0,
@@ -414,6 +418,12 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
 
     match endpoint {
         "/latest" => {  // equivalent of update-check
+
+            if(method != "GET"){
+                handle_latest_response(&stream, &default_version, Status::errorunsupportedprotocol, &default_request);
+                return;
+            }
+
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
 
             if(request_data.sessionid == ""){
@@ -436,6 +446,10 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
         },
 
         "/download" => {    // the download phase/ping check
+            let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
+            if(request_data.sessionid == "" || request_data.sessionid == "") {
+            }
+
         },
         "/status" => {   // equivalent of ping-back
         },
