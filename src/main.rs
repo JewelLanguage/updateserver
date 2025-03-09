@@ -15,6 +15,7 @@ use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
 use crate::session::{new_session, update_current_action, update_request, update_session_actions, Session_Manager};
+use crate::version::Versions;
 
 #[derive(Serialize, Deserialize)]
 enum Platform {
@@ -103,7 +104,7 @@ struct SysRequirements{
 }
 
 #[derive(Serialize, Deserialize)]
-enum Status{
+enum Status{    // Used in status requests/checks for a particular session
     ok,
     noupdate,
     errorinternal,
@@ -111,6 +112,7 @@ enum Status{
     errorosnotsupported,
     errorhwnotsupported,
     errorunsupportedprotocol,
+    updatecomplete
 }
 
 #[derive(Serialize, Deserialize)]
@@ -136,7 +138,7 @@ struct Response {
 // download -> download after verification
 // abandon -> no more responses,
 // retry -> for failures
-#[derive(Serialize, Deserialize,PartialEq)]
+#[derive(Serialize, Deserialize,PartialEq, Clone)]
 enum Action{
     download,
     abandon,
@@ -152,6 +154,16 @@ struct LatestResponse{
     version: String,
     sessionid:String,
     requestid:String
+}
+
+#[derive(Serialize, Deserialize)]
+struct DownloadResponse{
+    actions:Vec<Action>,
+    info:String,
+    status:Status,
+    sessionid:String,
+    requestid:String,
+    downloadlink:String
 }
 
 fn handle_connection(mut stream: TcpStream, versions:&version::Versions, session_manager:&mut Session_Manager){
@@ -298,6 +310,7 @@ fn create_response(status_code:i32, message:&str) -> String{
     entire_body
 }
 
+
 fn handle_latest_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request){
     let mut response_string = String::from("");
     let mut response_object  = LatestResponse {
@@ -364,8 +377,69 @@ fn handle_latest_response(mut stream: &TcpStream, version:&version::Version, sta
 }
 
 
-fn handle_download_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request){
+fn handle_download_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request, session_manager:&mut Session_Manager){
+    let mut response_string = String::from("");
+    let mut response_object = DownloadResponse{
+        actions: vec![],
+        info:String::from("server prototype"),
+        status:Status::noupdate,
+        sessionid:request.sessionid.to_string(),
+        requestid:request.requestid.to_string(),
+        downloadlink : version.urls.first().unwrap().clone()
+    };
 
+    if(request.requestid == "" || request.sessionid == ""){
+        response_string = create_response(500, &serde_json::to_string(&response_string).unwrap());
+        stream.write_all(response_string.as_bytes()).unwrap();
+        return
+    }
+
+    match status {
+        Status::ok => {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::ok;
+            response_string = create_response(200,&serde_json::to_string(&response_object).unwrap())
+        },
+        Status::noupdate => {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::noupdate;
+            response_string = create_response(200,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorinternal=> {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorinternal;
+            response_string = create_response(500,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorosnotsupported =>{
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorosnotsupported;
+            response_string = create_response(406,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorhwnotsupported=> {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorhwnotsupported;
+            response_string = create_response(428,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorunsupportedprotocol=> {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorunsupportedprotocol;
+            response_string = create_response(401, &serde_json::to_string(&response_object).unwrap());
+        },
+        _ => {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::noupdate;
+            response_string = create_response(400, &serde_json::to_string(&response_object).unwrap());
+        }
+    }
+
+    stream.write_all(response_string.as_bytes()).unwrap();
 }
 
 fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&version::Versions, session_manager:&mut Session_Manager) {
@@ -457,24 +531,43 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
         },
 
         "/download" => {    // the download phase/ping check
+            if(method != "GET"){
+                handle_download_response(&stream, &default_version, Status::errorunsupportedprotocol, &default_request, session_manager);
+                return;
+            }
+
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
             if(session_manager.sessions.contains_key(&request_data.sessionid)){
                 let current_session = session_manager.sessions.get(&request_data.sessionid).unwrap();
                 if(current_session.requestid == request_data.requestid && current_session.previous_action == Action::latest && current_session.possible_actions.contains(&Action::download)){
                     let new_request_id = generate_id();
                     let previous_action = Action::download;
-                    let update_request_result = update_request(session_manager, &request_data, new_request_id);
+                    let update_request_result = update_request(session_manager, &request_data, new_request_id.clone());
                     if(update_request_result.0){
+                        request_data.requestid = new_request_id;
                         let update_current_action = update_current_action(session_manager, &request_data, previous_action);
                         if(update_current_action.0){
                             let update_session_actions = update_session_actions(session_manager, &request_data, vec![Action::abandon, Action::retry]);
                             if(update_session_actions.0){
                                 // all data is updated, create and send response
+                                match request_data.channel {
+                                    Channel::Dev => {
+                                        handle_download_response(&stream, versions.dev.first().unwrap(),Status::ok, &request_data,session_manager);
+                                        return;
+                                    },
+                                    _ => {
+                                        println!("Channel {} not supported", request_data.channel);
+                                        handle_download_response(&stream, &default_version ,Status::noupdate, &request_data,session_manager);
+                                        return;
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+            handle_download_response(&stream, &default_version ,Status::noupdate, &request_data,session_manager);
+            return;
         },
 
         "/status" => {   // equivalent of ping-back
