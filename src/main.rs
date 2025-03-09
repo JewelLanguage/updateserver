@@ -1,5 +1,6 @@
 mod version;
 mod latest;
+mod session;
 
 use std::{
     fs,
@@ -12,6 +13,7 @@ use std::path::Path;
 use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
+use crate::session::{new_session, update_current_action, update_request, Session_Manager};
 
 #[derive(Serialize, Deserialize)]
 enum Platform {
@@ -137,7 +139,8 @@ struct Response {
 enum Action{
     download,
     abandon,
-    retry
+    retry,
+    latest
 }
 
 #[derive(Serialize, Deserialize)]
@@ -150,7 +153,7 @@ struct LatestResponse{
     requestid:String
 }
 
-fn handle_connection(mut stream: TcpStream, versions:&version::Versions){
+fn handle_connection(mut stream: TcpStream, versions:&version::Versions, session_manager:&mut Session_Manager){
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
 
@@ -189,7 +192,7 @@ fn handle_connection(mut stream: TcpStream, versions:&version::Versions){
 
     println!("Body:\n{}", body);
 
-    parse_request(stream,request_line,body, versions);
+    parse_request(stream,request_line,body, versions, session_manager);
 
     println!("Response sent!");
 }
@@ -364,7 +367,7 @@ fn handle_download_response(mut stream: &TcpStream, version:&version::Version, s
 
 }
 
-fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&version::Versions) {
+fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&version::Versions, session_manager:&mut Session_Manager) {
     let default_version = version::Version{
         major:0,
         minor:0,
@@ -418,7 +421,6 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
 
     match endpoint {
         "/latest" => {  // equivalent of update-check
-
             if(method != "GET"){
                 handle_latest_response(&stream, &default_version, Status::errorunsupportedprotocol, &default_request);
                 return;
@@ -430,8 +432,16 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
                 request_data.sessionid = generate_id();
             }
 
+            if(!new_session(session_manager, &request_data)){
+                println!("Failed to create a new session because session already exists");
+                return
+            }
+
             if(request_data.requestid == ""){
-                request_data.requestid = generate_id();
+                let new_request_id = generate_id();
+                request_data.requestid = new_request_id.clone();
+                update_request(session_manager, &request_data, new_request_id);
+                update_current_action(session_manager, &request_data, Action::latest);
             }
 
             match request_data.channel {
@@ -447,10 +457,8 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
 
         "/download" => {    // the download phase/ping check
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
-            if(request_data.sessionid == "" || request_data.sessionid == "") {
-            }
-
         },
+
         "/status" => {   // equivalent of ping-back
         },
         _ => {
@@ -465,13 +473,15 @@ fn main() {
     let versions_content = fs::read_to_string(versions_path)
         .expect("Should have been able to read the file");
 
+    let mut session_manager = session::new_session_manager();
+
     let versions = serde_json::from_str::<version::Versions>(&versions_content).unwrap();
     println!("All Versions : {}",versions);
 
     let listener = TcpListener::bind("127.0.0.1:7778").unwrap();
     for stream in listener.incoming(){
         let stream = stream.unwrap();
-        handle_connection(stream, &versions);
+        handle_connection(stream, &versions, &mut session_manager);
     }
 }
 
