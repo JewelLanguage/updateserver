@@ -39,9 +39,6 @@ pub fn update_session_actions(
     new_actions: Vec<Action>,
 ) -> (bool, String) {
     if let Some(session) = manager.sessions.get_mut(&request.sessionid) {
-        if session.requestid != request.requestid {
-            return (false, String::from("Invalid Request ID"));
-        }
         session.possible_actions = new_actions;
         return (true, String::from("success"));
     }
@@ -54,9 +51,6 @@ pub fn update_current_action(
     new_action: Action,
 ) -> (bool, String) {
     if let Some(session) = manager.sessions.get_mut(&request.sessionid) {
-        if session.requestid != request.requestid {
-            return (false, String::from("Invalid Request ID"));
-        }
         session.previous_action = new_action;
         return (true, String::from("success"));
     }
@@ -69,10 +63,7 @@ pub fn update_request(
     new_requestid: String,
 ) -> (bool, String) {
     if let Some(session) = manager.sessions.get_mut(&request.sessionid) {
-        if session.requestid != request.requestid {
-            return (false, String::from("Invalid Request ID"));
-        }
-        session.requestid = new_requestid;
+        session.requestid = new_requestid.clone();
         return (true, String::from("success"));
     }
     (false, String::from("Invalid Session ID"))

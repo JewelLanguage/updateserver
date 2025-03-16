@@ -10,12 +10,10 @@ use std::{
 };
 use std::fmt::Debug;
 use std::path::Path;
-use std::thread::current;
 use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
 use crate::session::{new_session, update_current_action, update_request, update_session_actions, Session_Manager};
-use crate::version::Versions;
 
 #[derive(Serialize, Deserialize)]
 enum Platform {
@@ -396,7 +394,7 @@ fn handle_download_response(mut stream: &TcpStream, version:&version::Version, s
 
     match status {
         Status::ok => {
-            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            let actions = session_manager.sessions.get(&request.sessionid).unwrap().possible_actions.clone();
             response_object.actions = actions;
             response_object.status = Status::ok;
             response_string = create_response(200,&serde_json::to_string(&response_object).unwrap())
@@ -517,6 +515,7 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
                 request_data.requestid = new_request_id.clone();
                 update_request(session_manager, &request_data, new_request_id);
                 update_current_action(session_manager, &request_data, Action::latest);
+                update_session_actions(session_manager, &request_data, vec![Action::latest,Action::download, Action::abandon, Action::retry]);
             }
 
             match request_data.channel {
