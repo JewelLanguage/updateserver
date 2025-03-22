@@ -10,10 +10,12 @@ use std::{
 };
 use std::fmt::Debug;
 use std::path::Path;
+use std::thread::current;
 use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
 use crate::session::{new_session, update_current_action, update_request, update_session_actions, Session_Manager};
+use crate::version::Version;
 
 #[derive(Serialize, Deserialize)]
 enum Platform {
@@ -32,7 +34,7 @@ enum Architecture{
     x64
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq,Clone)]
 struct Hardware{
     sse:i32,
     sse2:i32,
@@ -43,7 +45,7 @@ struct Hardware{
     physmemory:i32 // Physical memory available to the client, if unknown, assume its the size of the latest release +2GB
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 struct OperatingSystem{
     platform:String,
     sp:String, // Service Pack
@@ -51,7 +53,7 @@ struct OperatingSystem{
     dedup:String, // used to dedup user count
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
 enum Channel{
     Stable,
     Beta,
@@ -74,7 +76,7 @@ impl fmt::Display for Channel{
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq, Clone)]
 struct Request{
     updater:String, // client software
     acceptformat:String,
@@ -85,7 +87,8 @@ struct Request{
     requestid:String,
     sessionid:String,
     channel:Channel,
-    updaterversion:f32
+    updaterversion:f32,
+
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,6 +116,7 @@ enum Status{    // Used in status requests/checks for a particular session
     updatecomplete
 }
 
+
 #[derive(Serialize, Deserialize)]
 struct Manifest{
     arguments:String,
@@ -129,8 +133,6 @@ struct Response {
     manifest:Manifest,
 }
 
-
-
 // List of actions that can be taken based on specific response
 // Only two actions supported right now:
 // download -> download after verification
@@ -141,7 +143,18 @@ enum Action{
     download,
     abandon,
     retry,
-    latest
+    latest,
+    complete,
+}
+
+#[derive(Serialize, Deserialize, PartialEq, Clone)]
+enum EventType {
+    Install,
+    Update,
+    Uninstall,
+    Download,
+    Complete,
+    None
 }
 
 #[derive(Serialize, Deserialize)]
@@ -162,6 +175,15 @@ struct DownloadResponse{
     sessionid:String,
     requestid:String,
     downloadlink:String
+}
+
+
+#[derive(Serialize, Deserialize)]
+struct StatusRequest{
+    request:Request,
+    eventtype:EventType,
+    action:Action,
+    result:i32, // 0 => error, 1 => success, 2 => cancelled
 }
 
 fn handle_connection(mut stream: TcpStream, versions:&version::Versions, session_manager:&mut Session_Manager){
@@ -377,6 +399,8 @@ fn handle_latest_response(mut stream: &TcpStream, version:&version::Version, sta
 
 fn handle_download_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request, session_manager:&mut Session_Manager){
     let mut response_string = String::from("");
+
+
     let mut response_object = DownloadResponse{
         actions: vec![],
         info:String::from("server prototype"),
@@ -440,6 +464,74 @@ fn handle_download_response(mut stream: &TcpStream, version:&version::Version, s
     stream.write_all(response_string.as_bytes()).unwrap();
 }
 
+
+fn handle_status_response(mut stream: &TcpStream, status:Status,version:&version::Version, request: &Request, session_manager:&mut Session_Manager){
+    let mut response_string = String::from("");
+    let mut response_object = DownloadResponse{
+        actions: vec![],
+        info:String::from("server prototype"),
+        status:Status::noupdate,
+        sessionid:request.sessionid.to_string(),
+        requestid:request.requestid.to_string(),
+        downloadlink : version.urls.first().unwrap().clone()
+    };
+
+    if(request.requestid == "" || request.sessionid == ""){
+        response_string = create_response(500, &serde_json::to_string(&response_string).unwrap());
+        stream.write_all(response_string.as_bytes()).unwrap();
+        return
+    }
+
+    match status {
+        Status::ok => {
+            let actions = session_manager.sessions.get(&request.sessionid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::ok;
+            response_string = create_response(200,&serde_json::to_string(&response_object).unwrap())
+        },
+        Status::noupdate => {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::noupdate;
+            response_string = create_response(200,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorinternal=> {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorinternal;
+            response_string = create_response(500,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorosnotsupported =>{
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorosnotsupported;
+            response_string = create_response(406,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorhwnotsupported=> {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorhwnotsupported;
+            response_string = create_response(428,&serde_json::to_string(&response_object).unwrap());
+        },
+        Status::errorunsupportedprotocol=> {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::errorunsupportedprotocol;
+            response_string = create_response(401, &serde_json::to_string(&response_object).unwrap());
+        },
+        _ => {
+            let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
+            response_object.actions = actions;
+            response_object.status = Status::noupdate;
+            response_string = create_response(400, &serde_json::to_string(&response_object).unwrap());
+        }
+    }
+
+    stream.write_all(response_string.as_bytes()).unwrap();
+}
+
+
+
 fn parse_request(mut stream: TcpStream,request_header:String, body:String, versions:&version::Versions, session_manager:&mut Session_Manager) {
     let default_version = version::Version{
         major:0,
@@ -500,33 +592,7 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
             }
 
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
-
-            if(request_data.sessionid == ""){
-                request_data.sessionid = generate_id();
-            }
-
-            if(!new_session(session_manager, &request_data)){
-                println!("Failed to create a new session because session already exists");
-                return
-            }
-
-            if(request_data.requestid == ""){
-                let new_request_id = generate_id();
-                request_data.requestid = new_request_id.clone();
-                update_request(session_manager, &request_data, new_request_id);
-                update_current_action(session_manager, &request_data, Action::latest);
-                update_session_actions(session_manager, &request_data, vec![Action::latest,Action::download, Action::abandon, Action::retry]);
-            }
-
-            match request_data.channel {
-                Channel::Dev => {
-                    handle_latest_response(&stream, versions.dev.first().unwrap(),Status::ok, &request_data);
-                },
-                _ => {
-                    println!("Channel {} not supported", request_data.channel);
-                    handle_latest_response(&stream, &default_version ,Status::noupdate, &request_data);
-                }
-            }
+            handle_latest(&stream, &default_version, versions,session_manager, &mut request_data);
         },
 
         "/download" => {    // the download phase/ping check
@@ -536,43 +602,140 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
             }
 
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
-            if(session_manager.sessions.contains_key(&request_data.sessionid)){
-                let current_session = session_manager.sessions.get(&request_data.sessionid).unwrap();
-                if(current_session.requestid == request_data.requestid && current_session.previous_action == Action::latest && current_session.possible_actions.contains(&Action::download)){
-                    let new_request_id = generate_id();
-                    let previous_action = Action::download;
-                    let update_request_result = update_request(session_manager, &request_data, new_request_id.clone());
-                    if(update_request_result.0){
-                        request_data.requestid = new_request_id;
-                        let update_current_action = update_current_action(session_manager, &request_data, previous_action);
-                        if(update_current_action.0){
-                            let update_session_actions = update_session_actions(session_manager, &request_data, vec![Action::abandon, Action::retry]);
-                            if(update_session_actions.0){
-                                // all data is updated, create and send response
-                                match request_data.channel {
-                                    Channel::Dev => {
-                                        handle_download_response(&stream, versions.dev.first().unwrap(),Status::ok, &request_data,session_manager);
-                                        return;
-                                    },
-                                    _ => {
-                                        println!("Channel {} not supported", request_data.channel);
-                                        handle_download_response(&stream, &default_version ,Status::noupdate, &request_data,session_manager);
-                                        return;
-                                    }
-                                }
+            handle_download(&stream, &default_version, versions,session_manager, &mut request_data);
+        },
+
+        "/status" => {   // equivalent of ping-back
+            if(method != "GET"){
+                return;
+            }
+
+            let mut default_status_request = StatusRequest{
+                eventtype:EventType::None,
+                result:1,
+                action:Action::retry,
+                request:default_request.clone()
+            };
+
+            let mut request_data = if body == "" { default_status_request } else { serde_json::from_str::<StatusRequest>(&body.as_str()).unwrap() };
+            if(session_manager.sessions.contains_key(&request_data.request.sessionid)){
+               let current_session = session_manager.sessions.get(&request_data.request.sessionid).unwrap();
+                if(current_session.possible_actions.contains(&request_data.action)){
+                    match request_data.result{
+                        0 => {
+                            handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
+                        },
+                        1 => {
+                            // if successful, regardless of scenario remove from sessions and stop
+                            // complete session
+                            session_manager.sessions.remove(&request_data.request.sessionid);
+                            // return 200
+                        }
+                        2 => {
+                            handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
+                        }
+                        _ => {
+
+                        }
+                    }
+                }
+            }
+        },
+        _ => {
+            return;
+        }
+    }
+}
+
+
+fn handle_latest(mut stream: &TcpStream,default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut Request){
+    if(request_data.sessionid == ""){
+        request_data.sessionid = generate_id();
+    }
+
+    if(!new_session(session_manager, &request_data)){
+        println!("Failed to create a new session because session already exists");
+        return
+    }
+
+    if(request_data.requestid == ""){
+        let new_request_id = generate_id();
+        request_data.requestid = new_request_id.clone();
+        update_request(session_manager, &request_data, new_request_id);
+        update_current_action(session_manager, &request_data, Action::latest);
+        update_session_actions(session_manager, &request_data, vec![Action::latest,Action::download, Action::abandon, Action::retry]);
+    }
+
+    match request_data.channel {
+        Channel::Dev => {
+            handle_latest_response(&stream, versions.dev.first().unwrap(),Status::ok, &request_data);
+        },
+        _ => {
+            println!("Channel {} not supported", request_data.channel);
+            handle_latest_response(&stream, &default_version ,Status::noupdate, &request_data);
+        }
+    }
+}
+
+fn handle_download(stream: &TcpStream, default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut Request){
+    if(session_manager.sessions.contains_key(&request_data.sessionid)){
+        let current_session = session_manager.sessions.get(&request_data.sessionid).unwrap();
+        if(current_session.requestid == request_data.requestid && current_session.previous_action == Action::latest && current_session.possible_actions.contains(&Action::download)){
+            let new_request_id = generate_id();
+            let previous_action = Action::download;
+            let update_request_result = update_request(session_manager, &request_data, new_request_id.clone());
+            if(update_request_result.0){
+                request_data.requestid = new_request_id;
+                let update_current_action = update_current_action(session_manager, &request_data, previous_action);
+                if(update_current_action.0){
+                    let update_session_actions = update_session_actions(session_manager, &request_data, vec![Action::abandon, Action::retry]);
+                    if(update_session_actions.0){
+                        // all data is updated, create and send response
+                        match request_data.channel {
+                            Channel::Dev => {
+                                handle_download_response(&stream, versions.dev.first().unwrap(),Status::ok, &request_data,session_manager);
+                                return;
+                            },
+                            _ => {
+                                println!("Channel {} not supported", request_data.channel);
+                                handle_download_response(&stream, &default_version ,Status::noupdate, &request_data,session_manager);
+                                return;
                             }
                         }
                     }
                 }
             }
-            handle_download_response(&stream, &default_version ,Status::noupdate, &request_data,session_manager);
-            return;
-        },
+        }
+    }
+    handle_download_response(&stream, &default_version ,Status::noupdate, &request_data,session_manager);
+    return;
+}
 
-        "/status" => {   // equivalent of ping-back
+
+fn handle_status_action(stream: &TcpStream, default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut Request, action:&Action, previous_action:&Action){
+    match action {
+        Action::retry => {
+            // we could store the last response and send it again??
+            match previous_action {
+                Action::latest => {
+                    handle_latest(&stream,&default_version, versions, session_manager, request_data );
+                },
+                Action::download => {
+                    handle_download(&stream, &default_version, versions, session_manager, request_data);
+                },
+                _ => {
+                    // need logic to send something here
+                }
+            }
         },
+        Action::abandon => {
+            session_manager.sessions.remove(&request_data.sessionid);   // we delete your session and send back a success response
+        },
+        Action::complete => {
+            session_manager.sessions.remove(&request_data.sessionid);   // clear session and send back response
+        }
         _ => {
-            return;
+            // send back an error
         }
     }
 }
