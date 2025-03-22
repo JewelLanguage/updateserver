@@ -14,7 +14,7 @@ use std::thread::current;
 use random_string::generate;
 use serde::{Serialize, Deserialize};
 use serde_json;
-use crate::session::{new_session, update_current_action, update_request, update_session_actions, Session_Manager};
+use crate::session::{new_session, remove_session, update_current_action, update_request, update_session_actions, Session_Manager};
 use crate::version::Version;
 
 #[derive(Serialize, Deserialize)]
@@ -113,7 +113,8 @@ enum Status{    // Used in status requests/checks for a particular session
     errorosnotsupported,
     errorhwnotsupported,
     errorunsupportedprotocol,
-    updatecomplete
+    updatecomplete,
+    updateabandoned,
 }
 
 
@@ -175,6 +176,13 @@ struct DownloadResponse{
     sessionid:String,
     requestid:String,
     downloadlink:String
+}
+
+#[derive(Serialize, Deserialize)]
+struct StatusResponse{
+    sessionid:String,
+    requestid:String,
+    status:Status,
 }
 
 
@@ -397,6 +405,7 @@ fn handle_latest_response(mut stream: &TcpStream, version:&version::Version, sta
 }
 
 
+
 fn handle_download_response(mut stream: &TcpStream, version:&version::Version, status:Status, request: &Request, session_manager:&mut Session_Manager){
     let mut response_string = String::from("");
 
@@ -467,13 +476,10 @@ fn handle_download_response(mut stream: &TcpStream, version:&version::Version, s
 
 fn handle_status_response(mut stream: &TcpStream, status:Status,version:&version::Version, request: &Request, session_manager:&mut Session_Manager){
     let mut response_string = String::from("");
-    let mut response_object = DownloadResponse{
-        actions: vec![],
-        info:String::from("server prototype"),
-        status:Status::noupdate,
-        sessionid:request.sessionid.to_string(),
-        requestid:request.requestid.to_string(),
-        downloadlink : version.urls.first().unwrap().clone()
+    let mut response_object = StatusResponse{
+        sessionid:request.clone().sessionid,
+        requestid:request.clone().sessionid,
+        status:Status::ok
     };
 
     if(request.requestid == "" || request.sessionid == ""){
@@ -485,48 +491,47 @@ fn handle_status_response(mut stream: &TcpStream, status:Status,version:&version
     match status {
         Status::ok => {
             let actions = session_manager.sessions.get(&request.sessionid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
-            response_object.status = Status::ok;
             response_string = create_response(200,&serde_json::to_string(&response_object).unwrap())
         },
         Status::noupdate => {
             let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
             response_object.status = Status::noupdate;
             response_string = create_response(200,&serde_json::to_string(&response_object).unwrap());
         },
         Status::errorinternal=> {
             let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
             response_object.status = Status::errorinternal;
             response_string = create_response(500,&serde_json::to_string(&response_object).unwrap());
         },
         Status::errorosnotsupported =>{
             let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
             response_object.status = Status::errorosnotsupported;
             response_string = create_response(406,&serde_json::to_string(&response_object).unwrap());
         },
         Status::errorhwnotsupported=> {
             let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
             response_object.status = Status::errorhwnotsupported;
             response_string = create_response(428,&serde_json::to_string(&response_object).unwrap());
         },
         Status::errorunsupportedprotocol=> {
             let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
             response_object.status = Status::errorunsupportedprotocol;
             response_string = create_response(401, &serde_json::to_string(&response_object).unwrap());
         },
+        Status::updateabandoned => {
+            let actions = session_manager.sessions.get(&request.sessionid).unwrap().possible_actions.clone();
+            response_string = create_response(200,&serde_json::to_string(&response_object).unwrap())
+        }
+        Status::updatecomplete => {
+            let actions = session_manager.sessions.get(&request.sessionid).unwrap().possible_actions.clone();
+            response_string = create_response(200,&serde_json::to_string(&response_object).unwrap())
+        },
         _ => {
             let actions = session_manager.sessions.get(&request.requestid).unwrap().possible_actions.clone();
-            response_object.actions = actions;
             response_object.status = Status::noupdate;
             response_string = create_response(400, &serde_json::to_string(&response_object).unwrap());
         }
     }
-
     stream.write_all(response_string.as_bytes()).unwrap();
 }
 
@@ -619,23 +624,21 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
 
             let mut request_data = if body == "" { default_status_request } else { serde_json::from_str::<StatusRequest>(&body.as_str()).unwrap() };
             if(session_manager.sessions.contains_key(&request_data.request.sessionid)){
-               let current_session = session_manager.sessions.get(&request_data.request.sessionid).unwrap();
+                let current_session = session_manager.sessions.get(&request_data.request.sessionid).unwrap().clone();
                 if(current_session.possible_actions.contains(&request_data.action)){
                     match request_data.result{
                         0 => {
                             handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
                         },
                         1 => {
-                            // if successful, regardless of scenario remove from sessions and stop
-                            // complete session
                             session_manager.sessions.remove(&request_data.request.sessionid);
-                            // return 200
+                            handle_status_response(&stream, Status::ok, &default_version,&request_data.request, session_manager);
                         }
                         2 => {
                             handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
                         }
                         _ => {
-
+                            handle_status_response(&stream, Status::errorinternal, &default_version,&request_data.request, session_manager);
                         }
                     }
                 }
@@ -711,7 +714,6 @@ fn handle_download(stream: &TcpStream, default_version:&Version, versions:&versi
     return;
 }
 
-
 fn handle_status_action(stream: &TcpStream, default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut Request, action:&Action, previous_action:&Action){
     match action {
         Action::retry => {
@@ -724,7 +726,7 @@ fn handle_status_action(stream: &TcpStream, default_version:&Version, versions:&
                     handle_download(&stream, &default_version, versions, session_manager, request_data);
                 },
                 _ => {
-                    // need logic to send something here
+                    handle_status_response(&stream, Status::errorunsupportedprotocol,default_version,request_data, session_manager)
                 }
             }
         },
@@ -735,9 +737,38 @@ fn handle_status_action(stream: &TcpStream, default_version:&Version, versions:&
             session_manager.sessions.remove(&request_data.sessionid);   // clear session and send back response
         }
         _ => {
-            // send back an error
+            handle_status_response(&stream, Status::errorunsupportedprotocol,default_version,request_data, session_manager)
         }
     }
+}
+
+fn handle_status(stream: &TcpStream, default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut StatusRequest){
+    // cloning let us use the session manager without running into the error below:
+    // cannot borrow *session_manager as mutable because it is also borrowed as immutable
+    let session_manager_cpy = session_manager.sessions.clone(); // cloning allows us to avoid the
+
+    if(session_manager.sessions.contains_key(&request_data.request.sessionid)){
+        let current_session = session_manager_cpy.get(&request_data.request.sessionid).unwrap();
+        if(current_session.possible_actions.contains(&request_data.action)){
+            match request_data.result{
+                0 => {
+                    handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
+                },
+                1 => {
+                    session_manager.sessions.remove(&request_data.request.sessionid);
+                    handle_status_response(&stream, Status::ok, &default_version,&request_data.request, session_manager);
+                }
+                2 => {
+                    handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
+                }
+                _ => {
+                    handle_status_response(&stream, Status::errorinternal, &default_version,&request_data.request, session_manager);
+                }
+            }
+        }
+    }
+
+    handle_status_response(&stream, Status::errorunsupportedprotocol, &default_version, &request_data.request, session_manager);
 }
 
 fn main() {

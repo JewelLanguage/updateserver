@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::{Action, Platform, Request, Response};
 use crate::Action::latest;
 
+#[derive(Clone)]
 pub struct Session {
     pub requestid: String,
     pub possible_actions: Vec<Action>,
