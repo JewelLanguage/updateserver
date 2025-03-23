@@ -607,7 +607,7 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
             }
 
             let mut request_data = if body == "" { default_request } else { serde_json::from_str::<Request>(&body.as_str()).unwrap() };
-            handle_download(&stream, &default_version, versions,session_manager, &mut request_data);
+            handle_download(&stream, &default_version, versions,session_manager, &mut request_data, false);
         },
 
         "/status" => {   // equivalent of ping-back
@@ -622,7 +622,10 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
                 request:default_request.clone()
             };
 
-            let mut request_data = if body == "" { default_status_request } else { serde_json::from_str::<StatusRequest>(&body.as_str()).unwrap() };
+            let mut request_data = if body == "" { default_status_request } else {
+                serde_json::from_str::<StatusRequest>(&body.as_str()).unwrap()
+            };
+
             if(session_manager.sessions.contains_key(&request_data.request.sessionid)){
                 let current_session = session_manager.sessions.get(&request_data.request.sessionid).unwrap().clone();
                 if(current_session.possible_actions.contains(&request_data.action)){
@@ -631,8 +634,8 @@ fn parse_request(mut stream: TcpStream,request_header:String, body:String, versi
                             handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
                         },
                         1 => {
-                            session_manager.sessions.remove(&request_data.request.sessionid);
                             handle_status_response(&stream, Status::ok, &default_version,&request_data.request, session_manager);
+                            session_manager.sessions.remove(&request_data.request.sessionid);
                         }
                         2 => {
                             handle_status_action(&stream,&default_version, versions, session_manager, &mut request_data.request, &request_data.action, &current_session.previous_action);
@@ -680,10 +683,11 @@ fn handle_latest(mut stream: &TcpStream,default_version:&Version, versions:&vers
     }
 }
 
-fn handle_download(stream: &TcpStream, default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut Request){
+fn handle_download(stream: &TcpStream, default_version:&Version, versions:&version::Versions, session_manager:&mut Session_Manager, request_data:&mut Request, ping_back:bool){
     if(session_manager.sessions.contains_key(&request_data.sessionid)){
         let current_session = session_manager.sessions.get(&request_data.sessionid).unwrap();
-        if(current_session.requestid == request_data.requestid && current_session.previous_action == Action::latest && current_session.possible_actions.contains(&Action::download)){
+        let new_download = (current_session.requestid == request_data.requestid && current_session.previous_action == Action::latest && current_session.possible_actions.contains(&Action::download));
+        if(new_download || ping_back){
             let new_request_id = generate_id();
             let previous_action = Action::download;
             let update_request_result = update_request(session_manager, &request_data, new_request_id.clone());
@@ -723,7 +727,7 @@ fn handle_status_action(stream: &TcpStream, default_version:&Version, versions:&
                     handle_latest(&stream,&default_version, versions, session_manager, request_data );
                 },
                 Action::download => {
-                    handle_download(&stream, &default_version, versions, session_manager, request_data);
+                    handle_download(&stream, &default_version, versions, session_manager, request_data, true);
                 },
                 _ => {
                     handle_status_response(&stream, Status::errorunsupportedprotocol,default_version,request_data, session_manager)
